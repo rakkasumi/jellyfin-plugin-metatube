@@ -14,7 +14,7 @@ namespace Jellyfin.Plugin.MetaTube.Configuration;
 #if __EMBY__
 public class PluginConfiguration : EditableOptionsBase
 {
-    public override string EditorTitle => Plugin.Instance.Name;
+    public override string EditorTitle => Plugin.ProviderName;
 #else
 public class PluginConfiguration : BasePluginConfiguration
 {
@@ -32,6 +32,12 @@ public class PluginConfiguration : BasePluginConfiguration
     [Description("Access token for the MetaTube Server, or blank if no token is set by the backend.")]
 #endif
     public string Token { get; set; } = string.Empty;
+
+#if __EMBY__
+    [DisplayName("Enable auto update")]
+    [Description("Automatically update the plugin through scheduled tasks.")]
+    public bool EnableAutoUpdate { get; set; } = true;
+#endif
 
 #if __EMBY__
     [DisplayName("Enable collections")]

@@ -1,7 +1,8 @@
 using System.Text;
-using System.Linq;
+using System.Text.RegularExpressions;
 using Jellyfin.Plugin.MetaTube.Configuration;
 using Jellyfin.Plugin.MetaTube.Extensions;
+using Jellyfin.Plugin.MetaTube.Helpers;
 using Jellyfin.Plugin.MetaTube.Metadata;
 using Jellyfin.Plugin.MetaTube.Translation;
 using MediaBrowser.Controller.Entities;
@@ -68,12 +69,14 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
             }
         }
 
-        var pid = info.GetPid(Name);
+
+        var pid = info.GetPid(Plugin.ProviderId);
+
         if (string.IsNullOrWhiteSpace(pid.Id) || string.IsNullOrWhiteSpace(pid.Provider))
         {
             // Search movies and pick the first result.
             var firstResult = (await GetSearchResults(info, cancellationToken)).FirstOrDefault();
-            if (firstResult != null) pid = firstResult.GetPid(Name);
+            if (firstResult != null) pid = firstResult.GetPid(Plugin.ProviderId);
         }
 
         Logger.Info("Get movie info: {0}", pid.ToString());
@@ -106,8 +109,8 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
         // Distinct and clean blank list
         m.Genres = m.Genres?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray() ?? Array.Empty<string>();
         m.Actors = m.Actors?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray() ?? Array.Empty<string>();
-        m.PreviewImages = m.PreviewImages?.Where(
-            x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray() ?? Array.Empty<string>();
+        m.PreviewImages = m.PreviewImages?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray() ??
+                          Array.Empty<string>();
 
         // Build parameters.
         var parameters = new Dictionary<string, string>
@@ -169,7 +172,6 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
             result.Item.AddCollection(m.Series);
             Logger.Info("Add Collection for movie {0} [{1}]", pid.ToString(), m.Series);
         }
-
 
         // Add studio.
         if (!string.IsNullOrWhiteSpace(m.Maker))
@@ -240,7 +242,8 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
             }
         }
 
-        var pid = info.GetPid(Name);
+        var pid = info.GetPid(Plugin.ProviderId);
+
 
         var searchResults = new List<MovieSearchResult>();
         if (string.IsNullOrWhiteSpace(pid.Id) || string.IsNullOrWhiteSpace(pid.Provider))
@@ -265,8 +268,8 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
                 // Filter out mismatched results.
                 searchResults.RemoveAll(m => !filter.Contains(m.Provider, StringComparer.OrdinalIgnoreCase));
                 // Reorder results by stable sort.
-                searchResults = searchResults.OrderBy(
-                    m => filter.FindIndex(s => s.Equals(m.Provider, StringComparison.OrdinalIgnoreCase))).ToList();
+                searchResults = searchResults.OrderBy(m =>
+                    filter.FindIndex(s => s.Equals(m.Provider, StringComparison.OrdinalIgnoreCase))).ToList();
             }
             else
             {
@@ -341,21 +344,54 @@ public class MovieProvider : BaseProvider, IRemoteMetadataProvider<Movie, MovieI
             if (searchResults?.Any() != true)
             {
                 Logger.Warn("Movie not found on AVBASE: {0}", m.Id);
+                return;
             }
-            else if (searchResults.Count > 1)
+
+            foreach (var result in searchResults)
             {
-                // Ignore multiple results to avoid ambiguity.
-                Logger.Warn("Multiple movies found on AVBASE: {0}", m.Id);
+                var similarity = CalculateTitleSimilarity(m, result);
+
+                Logger.Info("Calculate movie title similarity for {0} ({1}) and {2} ({3}): {4:0.00%}",
+                    m.Id, m.Provider, result.Id, result.Provider, similarity);
+
+                if (similarity >= 0.8)
+                {
+                    if (result.Actors?.Any() == true)
+                        m.Actors = result.Actors;
+                    return;
+                }
             }
-            else
-            {
-                var firstResult = searchResults.First();
-                if (firstResult.Actors?.Any() == true) m.Actors = firstResult.Actors;
-            }
+
+            Logger.Warn("No matching movie found on AVBASE for {0}", m.Id);
         }
         catch (Exception e)
         {
             Logger.Error("Convert to real actor names error: {0} ({1})", m.Number, e.Message);
+        }
+    }
+
+    private static double CalculateTitleSimilarity(MovieSearchResult source, MovieSearchResult target)
+    {
+        var sourceKey = Normalize(source.Number + source.Title);
+        var targetKey = Normalize(target.Number + target.Title);
+
+        if (string.IsNullOrWhiteSpace(sourceKey) || string.IsNullOrWhiteSpace(targetKey))
+            return 0.0;
+
+        var distance = Levenshtein.Distance(sourceKey, targetKey);
+        var avgLength = (sourceKey.Length + targetKey.Length) / 2.0;
+        var similarity = 1.0 - distance / avgLength;
+
+        return Math.Clamp(similarity, 0.0, 1.0);
+
+        string Normalize(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return string.Empty;
+
+            s = s.ToLowerInvariant();
+            s = Regex.Replace(s, @"[\s\[\]\(\)【】（）]", "");
+            return s.Trim();
         }
     }
 
